@@ -27,7 +27,7 @@ const ROWS = [
 ];
 
 const cache = new Map();
-const CACHE_MS = 6 * 60 * 60 * 1000;
+const CACHE_MS = 60 * 60 * 1000;
 
 function cached(key) {
   const entry = cache.get(key);
@@ -168,7 +168,67 @@ app.get("/debug/providers/:type", async (req, res) => {
     json(res, { providers: [], error: err.message });
   }
 });
+// Diagnostic endpoint: checks whether TMDB returns Rent/Buy titles.
+app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
+  try {
+    const platform = PLATFORMS.find(p => p.id === req.params.platform);
+    const type = req.params.type;
+    const row = ROWS.find(r => r.id === req.params.row);
+    const tmdbType = type === "series" ? "tv" : "movie";
 
+    if (!platform || !row || !["movie", "series"].includes(type)) {
+      return json(res, { error: "Invalid platform, type, or row" });
+    }
+
+    const pid = await providerId(platform, tmdbType);
+    if (!pid) {
+      return json(res, {
+        error: "Provider not found",
+        platform: platform.name
+      });
+    }
+
+    const data = await tmdb(`/discover/${tmdbType}`, {
+      watch_region: "IN",
+      with_watch_providers: pid,
+      with_watch_monetization_types: row.monetization,
+      sort_by: row.sort,
+      page: 1,
+      language: "en-US"
+    });
+
+    const candidates = data.results || [];
+    const sample = candidates.slice(0, 5);
+
+    const checks = await Promise.all(
+      sample.map(item =>
+        hasProviderAccess(
+          platform,
+          tmdbType,
+          item.id,
+          row.monetization
+        ).catch(() => false)
+      )
+    );
+
+    return json(res, {
+      platform: platform.name,
+      providerId: pid,
+      region: "IN",
+      type,
+      row: row.id,
+      monetization: row.monetization,
+      discoverCandidateCount: candidates.length,
+      sampleTitles: sample.map((item, index) => ({
+        title: item.title || item.name,
+        providerVerified: checks[index]
+      }))
+    });
+  } catch (err) {
+    console.error(err);
+    return json(res, { error: err.message });
+  }
+});
 app.get("/manifest.json", (_req, res) => {
   const catalogs = [];
   for (const platform of PLATFORMS) {
