@@ -791,4 +791,316 @@ app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
     const pid = await providerId(platform, type);
     const metas = await catalog(platform, type, row);
 
-    res.js
+    res.json({
+      platform: platform.name,
+      providerId: pid,
+      region: "IN",
+      type,
+      row: row.id,
+      monetization: row.monetization,
+      resultCount: metas.length,
+      metas
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --------------------------------------------------
+// STREMIO MANIFEST
+// --------------------------------------------------
+
+app.get("/manifest.json", (req, res) => {
+  const catalogs = [];
+
+  for (const platform of PLATFORMS) {
+    const platformRows = ["prime", "appletv"].includes(platform.id)
+      ? ROWS.filter(row => !["rent", "buy"].includes(row.id))
+      : ROWS;
+
+    for (const row of platformRows) {
+      catalogs.push({
+        id: `${platform.id}_movie_${row.id}`,
+        type: "movie",
+        name: `${platform.name} - ${row.name}`
+      });
+
+      catalogs.push({
+        id: `${platform.id}_tv_${row.id}`,
+        type: "series",
+        name: `${platform.name} - ${row.name}`
+      });
+    }
+  }
+
+  res.json({
+    id: "com.ottuniverse.india",
+    version: VERSION,
+    name: "OTT Universe India",
+    description: "Discover movies and series reported as available on major OTT platforms in India.",
+    resources: ["catalog", "meta"],
+    types: ["movie", "series"],
+    idPrefixes: ["tmdb:"],
+    catalogs
+  });
+});
+
+// --------------------------------------------------
+// STREMIO CATALOGUE ROUTE
+// --------------------------------------------------
+
+app.get("/catalog/:type/:id.json", async (req, res) => {
+  try {
+    const type = req.params.type === "series"
+      ? "tv"
+      : req.params.type;
+
+    if (!["movie", "tv"].includes(type)) {
+      return res.json({ metas: [] });
+    }
+
+    const selected = getPlatformAndRow(req.params.id);
+
+    if (!selected || selected.type !== type) {
+      return res.json({ metas: [] });
+    }
+
+    const metas = await catalog(
+      selected.platform,
+      type,
+      selected.row
+    );
+
+    res.json({ metas });
+  } catch (error) {
+    console.error("Catalogue error:", error.message);
+
+    res.status(500).json({
+      metas: [],
+      error: error.message
+    });
+  }
+});
+
+// --------------------------------------------------
+// STREMIO METADATA ROUTE
+// --------------------------------------------------
+
+app.get("/meta/:type/:id.json", async (req, res) => {
+  try {
+    const type = req.params.type === "series"
+      ? "tv"
+      : req.params.type;
+
+    if (!["movie", "tv"].includes(type)) {
+      return res.status(400).json({
+        error: "Type must be movie or series."
+      });
+    }
+
+    const tmdbId = String(req.params.id).replace(/^tmdb:/, "");
+
+    if (!/^\d+$/.test(tmdbId)) {
+      return res.status(400).json({
+        error: "Invalid TMDB ID."
+      });
+    }
+
+    const details = await tmdb(`/${type}/${tmdbId}`, {
+      append_to_response: "external_ids,videos",
+      language: "en-US"
+    });
+
+    const isMovie = type === "movie";
+    const imdbId = details.external_ids?.imdb_id ||
+      details.imdb_id ||
+      null;
+
+    const [
+      imdbData,
+      credits,
+      certification,
+      seriesRuntime
+    ] = await Promise.all([
+      imdbId
+        ? omdbByImdbId(imdbId)
+        : Promise.resolve(null),
+
+      getCreditInformation(type, tmdbId),
+
+      getCertification(type, tmdbId),
+
+      isMovie
+        ? Promise.resolve(null)
+        : getSeriesEpisodeRuntime(details, tmdbId)
+    ]);
+
+    const trailerInformation = getTrailerInformation(details);
+
+    const spokenLanguages = (details.spoken_languages || [])
+      .map(language => ({
+        name: language.name,
+        englishName: language.english_name,
+        code: language.iso_639_1
+      }));
+
+    const meta = {
+      id: `tmdb:${details.id}`,
+      type: isMovie ? "movie" : "series",
+      name: isMovie ? details.title : details.name,
+      poster: imageUrl(details.poster_path),
+      background: imageUrl(details.backdrop_path, "w1280"),
+      description: details.overview || "",
+      tagline: details.tagline || "",
+
+      releaseInfo: (
+        isMovie ? details.release_date : details.first_air_date
+      )?.slice(0, 4) || "",
+
+      released: isMovie
+        ? details.release_date || null
+        : details.first_air_date || null,
+
+      genres: (details.genres || [])
+        .map(genre => genre.name),
+
+      country: (details.production_countries || [])
+        .map(country => country.name)
+        .join(", "),
+
+      originalLanguage: details.original_language || null,
+      spokenLanguages,
+
+      language: spokenLanguages
+        .map(item => item.name)
+        .join(", "),
+
+      tmdbRating:
+        typeof details.vote_average === "number"
+          ? Number(details.vote_average.toFixed(1))
+          : null,
+
+      tmdbVotes:
+        typeof details.vote_count === "number"
+          ? details.vote_count
+          : null,
+
+      imdb_id: imdbId,
+      imdbUrl: imdbId
+        ? `https://www.imdb.com/title/${imdbId}/`
+        : null,
+
+      imdbRating: validValue(imdbData?.imdbRating),
+      imdbVotes: validValue(imdbData?.imdbVotes),
+      awards: validValue(imdbData?.Awards),
+
+      links: imdbId
+        ? [{
+            name: "IMDb",
+            category: "imdb",
+            url: `https://www.imdb.com/title/${imdbId}/`
+          }]
+        : [],
+
+      ...credits,
+      ...certification,
+      ...trailerInformation,
+
+      productionCompanies: (details.production_companies || [])
+        .map(company => ({
+          name: company.name,
+          country: company.origin_country,
+          logo: imageUrl(company.logo_path, "w300")
+        })),
+
+      homepage: details.homepage || null
+    };
+
+    // Movie-specific information.
+    if (isMovie) {
+      meta.runtime =
+        typeof details.runtime === "number"
+          ? `${details.runtime} min`
+          : null;
+
+      meta.runtimeMinutes = details.runtime || null;
+    }
+
+    // TV-specific information.
+    if (!isMovie) {
+      const creators = (details.created_by || [])
+        .map(person => ({
+          name: person.name,
+          id: person.id,
+          profile: imageUrl(person.profile_path)
+        }));
+
+      meta.creators = creators.map(person => person.name);
+      meta.creatorDetails = creators;
+
+      meta.networks = (details.networks || [])
+        .map(network => ({
+          name: network.name,
+          logo: imageUrl(network.logo_path, "w300"),
+          country: network.origin_country
+        }));
+
+      meta.numberOfSeasons = details.number_of_seasons ?? null;
+      meta.numberOfEpisodes = details.number_of_episodes ?? null;
+      meta.firstAirDate = details.first_air_date || null;
+      meta.lastAirDate = details.last_air_date || null;
+      meta.status = details.status || null;
+
+      Object.assign(meta, seriesRuntime || {
+        episodeRuntime: null,
+        episodeRuntimeMinutes: null,
+        episodeRuntimeSource: null
+      });
+
+      meta.seasons = (details.seasons || [])
+        .map(season => ({
+          seasonNumber: season.season_number,
+          name: season.name,
+          episodeCount: season.episode_count,
+          airDate: season.air_date || null,
+          poster: imageUrl(season.poster_path)
+        }));
+
+      meta.lastEpisode = details.last_episode_to_air
+        ? {
+            name: details.last_episode_to_air.name,
+            seasonNumber: details.last_episode_to_air.season_number,
+            episodeNumber: details.last_episode_to_air.episode_number,
+            airDate: details.last_episode_to_air.air_date || null
+          }
+        : null;
+
+      meta.nextEpisode = details.next_episode_to_air
+        ? {
+            name: details.next_episode_to_air.name,
+            seasonNumber: details.next_episode_to_air.season_number,
+            episodeNumber: details.next_episode_to_air.episode_number,
+            airDate: details.next_episode_to_air.air_date || null
+          }
+        : null;
+    }
+
+    res.json({ meta });
+  } catch (error) {
+    console.error("Metadata error:", error.message);
+
+    res.status(500).json({
+      error: error.message
+    });
+  }
+});
+
+// --------------------------------------------------
+// START SERVER
+// --------------------------------------------------
+
+app.listen(PORT, () => {
+  console.log(
+    `OTT Universe India v${VERSION} listening on port ${PORT}`
+  );
+});
