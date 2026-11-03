@@ -200,17 +200,29 @@ app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
     const candidates = data.results || [];
     const sample = candidates.slice(0, 5);
 
-    const checks = await Promise.all(
-      sample.map(item =>
-        hasProviderAccess(
-          platform,
-          tmdbType,
-          item.id,
-          row.monetization
-        ).catch(() => false)
-      )
+    const providerDetails = await Promise.all(
+  sample.map(async item => {
+    const details = await tmdb(
+      `/${tmdbType}/${item.id}/watch/providers`
     );
 
+    const india = details.results && details.results.IN
+      ? details.results.IN
+      : {};
+
+    const getNames = key => (india[key] || []).map(p => ({
+      id: p.provider_id,
+      name: p.provider_name
+    }));
+
+    return {
+      title: item.title || item.name,
+      rent: getNames("rent"),
+      buy: getNames("buy"),
+      flatrate: getNames("flatrate")
+    };
+  })
+);
     return json(res, {
       platform: platform.name,
       providerId: pid,
@@ -219,10 +231,7 @@ app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
       row: row.id,
       monetization: row.monetization,
       discoverCandidateCount: candidates.length,
-      sampleTitles: sample.map((item, index) => ({
-        title: item.title || item.name,
-        providerVerified: checks[index]
-      }))
+      sampleTitles: providerDetails
     });
   } catch (err) {
     console.error(err);
