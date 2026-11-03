@@ -252,65 +252,58 @@ app.get("/manifest.json", (_req, res) => {
         ? ROWS.filter(row => !["rent", "buy"].includes(row.id))
         : ROWS;
 
-      for (const row of platformRows) {
-        catalogs.push({
-          type,
-          id: `${platform.id}_${tmdbType}_${row.id}`,
-          name: `${platform.name} • ${row.name}`,
-          extra: [{ name: "skip" }, { name: "search", isRequired: false }]
-        });
+async function catalog(platform, tmdbType, row) {
+  const pid = await providerId(platform, tmdbType);
+  if (!pid) return [];
+
+  const params = {
+    watch_region: "IN",
+    with_watch_providers: pid,
+    with_watch_monetization_types: row.monetization,
+    sort_by: row.sort,
+    page: 1,
+    language: "en-US"
+  };
+
+  if (row.id === "rated") {
+    params["vote_count.gte"] = 100;
+  }
+
+  if (row.id === "new") {
+    params["primary_release_date.lte"] =
+      new Date().toISOString().slice(0, 10);
+  }
+
+  const data = await tmdb(`/discover/${tmdbType}`, params);
+  const candidates = (data.results || []).slice(0, 30);
+  const verified = [];
+
+  for (let i = 0; i < candidates.length; i += 5) {
+    const batch = candidates.slice(i, i + 5);
+
+    const checks = await Promise.all(
+      batch.map(item =>
+        hasProviderAccess(
+          platform,
+          tmdbType,
+          item.id,
+          row.monetization
+        ).catch(err => {
+          console.error(
+            `Availability check failed for ${tmdbType}/${item.id}:`,
+            err.message
+          );
+          return false;
+        })
+      )
+    );
+
+    batch.forEach((item, index) => {
+      if (checks[index]) {
+        verified.push(toVideo(item, tmdbType));
       }
-    }
+    });
   }
 
-  json(res, {
-    id: "com.ottuniverse.india",
-    version: "1.2.0",
-    name: "OTT Universe India",
-    description: "India OTT discovery. Availability data powered by JustWatch via TMDB; verify on the service before subscribing or renting.",
-    resources: ["catalog", "meta"],
-    types: ["movie", "series"],
-    catalogs,
-    idPrefixes: ["tmdb:"]
-  });
-});
-
-app.get("/catalog/:type/:id.json", async (req, res) => {
-  try {
-    const { type, id } = req.params;
-    const platform = PLATFORMS.find(p => id.startsWith(p.id + "_"));
-    const row = ROWS.find(r => id.endsWith(`_${r.id}`));
-    const tmdbType = type === "series" ? "tv" : "movie";
-    if (!platform || !row || !["movie", "series"].includes(type)) return json(res, { metas: [] });
-    const metas = await catalog(platform, tmdbType, row);
-    json(res, { metas });
-  } catch (err) {
-    console.error(err);
-    res.status(502);
-    json(res, { metas: [], error: err.message });
-  }
-});
-
-app.get("/meta/:type/:id.json", async (req, res) => {
-  try {
-    const type = req.params.type === "series" ? "tv" : "movie";
-    const id = req.params.id.replace(/^tmdb:/, "");
-    if (!/^[0-9]+$/.test(id)) return json(res, { meta: null });
-    const item = await tmdb(`/${type}/${id}`, { language: "en-US" });
-    const video = toVideo(item, type);
-    const genres = (item.genres || []).map(g => g.name);
-    const meta = {
-      ...video,
-      genres,
-      runtime: type === "movie" && item.runtime ? `${item.runtime} min` : undefined,
-      country: (item.production_countries || []).map(c => c.name).join(", ") || undefined
-    };
-    json(res, { meta });
-  } catch (err) {
-    console.error(err);
-    res.status(502);
-    json(res, { meta: null, error: err.message });
-  }
-});
-
-app.listen(PORT, () => console.log(`OTT Universe India listening on ${PORT}`));
+  return verified.slice(0, 30);
+}
