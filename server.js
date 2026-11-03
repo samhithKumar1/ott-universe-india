@@ -22,6 +22,8 @@ const PLATFORMS = [
 const ROWS = [
   { id: "popular", name: "Popular", monetization: "flatrate", sort: "popularity.desc" },
   { id: "rated", name: "Highest Rated", monetization: "flatrate", sort: "vote_average.desc" },
+  { id: "trending", name: "Trending", monetization: "flatrate", sort: "popularity.desc" },
+  { id: "new", name: "Recently Released", monetization: "flatrate", sort: "primary_release_date.desc" },
   { id: "rent", name: "Rent", monetization: "rent", sort: "popularity.desc" },
   { id: "buy", name: "Buy", monetization: "buy", sort: "popularity.desc" }
 ];
