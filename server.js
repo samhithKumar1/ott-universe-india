@@ -26,12 +26,42 @@ const PLATFORMS = [
 ];
 
 const ROWS = [
-  { id: "popular", name: "Popular", monetization: "flatrate", sort: "popularity.desc" },
-  { id: "rated", name: "Highest Rated", monetization: "flatrate", sort: "vote_average.desc" },
-  { id: "trending", name: "Trending", monetization: "flatrate", sort: "popularity.desc" },
-  { id: "new", name: "Recently Released", monetization: "flatrate", sort: "primary_release_date.desc" },
-  { id: "rent", name: "Rent", monetization: "rent", sort: "popularity.desc" },
-  { id: "buy", name: "Buy", monetization: "buy", sort: "popularity.desc" }
+  {
+    id: "top10",
+    name: "Top 10",
+    sort: "popularity.desc",
+    limit: 10
+  },
+  {
+    id: "trending",
+    name: "Trending",
+    sort: "popularity.desc",
+    limit: 20
+  },
+  {
+    id: "new",
+    name: "Newly Added",
+    sort: "date_desc",
+    limit: 20
+  },
+  {
+    id: "upcoming",
+    name: "Coming Soon",
+    sort: "date_asc",
+    limit: 20
+  },
+  {
+    id: "rated",
+    name: "Highest Rated",
+    sort: "vote_average.desc",
+    limit: 20
+  },
+  {
+    id: "popular",
+    name: "Popular",
+    sort: "vote_count.desc",
+    limit: 20
+  }
 ];
 
 const CACHE_TTL = 60 * 60 * 1000;
@@ -582,74 +612,67 @@ async function catalog(platform, tmdbType, row) {
 
   if (!pid) return [];
 
-  let data;
+  const today = new Date();
+  const dateString = d => d.toISOString().slice(0, 10);
 
-  if (row.id === "trending") {
-    data = await tmdb(`/trending/${tmdbType}/week`, {
-      language: "en-US"
-    });
-  } else {
-    const params = {
-      watch_region: "IN",
-      with_watch_providers: pid,
-      with_watch_monetization_types: row.monetization,
-      sort_by: row.sort,
-      page: 1,
-      language: "en-US"
-    };
+  const todayString = dateString(today);
 
-    if (row.id === "rated") {
-      params["vote_count.gte"] = 100;
-    }
+  const past = new Date(today);
+  past.setDate(past.getDate() - 90);
 
-    if (row.id === "new") {
-      const today = new Date();
-      const past = new Date();
-      past.setMonth(past.getMonth() - 18);
+  const future = new Date(today);
+  future.setFullYear(future.getFullYear() + 1);
 
-      const todayString = today.toISOString().slice(0, 10);
-      const pastString = past.toISOString().slice(0, 10);
+  const dateField = tmdbType === "movie"
+    ? "primary_release_date"
+    : "first_air_date";
 
-      if (tmdbType === "movie") {
-        params["primary_release_date.gte"] = pastString;
-        params["primary_release_date.lte"] = todayString;
-      } else {
-        params["first_air_date.gte"] = pastString;
-        params["first_air_date.lte"] = todayString;
-        params.sort_by = "first_air_date.desc";
-      }
-    }
+  const params = {
+    watch_region: "IN",
+    with_watch_providers: pid,
+    with_watch_monetization_types: "flatrate",
+    sort_by: row.sort === "date_desc"
+      ? `${dateField}.desc`
+      : row.sort === "date_asc"
+        ? `${dateField}.asc`
+        : row.sort,
+    page: 1,
+    language: "en-US"
+  };
 
-    data = await tmdb(`/discover/${tmdbType}`, params);
+  if (row.id === "rated") {
+    params["vote_count.gte"] = 100;
+    params["vote_average.gte"] = 6;
   }
 
-  const candidates = (data.results || []).slice(0, 30);
-  const verified = [];
-
-  for (let i = 0; i < candidates.length; i += 5) {
-    const batch = candidates.slice(i, i + 5);
-
-    const checks = await Promise.all(
-      batch.map(item =>
-        hasProviderAccess(platform, tmdbType, item.id, row.monetization)
-          .catch(error => {
-            console.error(
-              `Availability check failed for ${item.id}:`,
-              error.message
-            );
-            return false;
-          })
-      )
-    );
-
-    batch.forEach((item, index) => {
-      if (checks[index]) {
-        verified.push(toVideo(item, tmdbType));
-      }
-    });
+  if (row.id === "new") {
+    params[`${dateField}.gte`] = dateString(past);
+    params[`${dateField}.lte`] = todayString;
   }
 
-  const results = verified.slice(0, 20);
+  if (row.id === "upcoming") {
+    params[`${dateField}.gte`] = todayString;
+    params[`${dateField}.lte`] = dateString(future);
+  }
+
+  if (row.id === "top10") {
+    params["vote_count.gte"] = 20;
+  }
+
+  if (row.id === "popular") {
+    params["vote_count.gte"] = 50;
+  }
+
+  const data = await tmdb(
+    `/discover/${tmdbType}`,
+    params
+  );
+
+  const results = (data.results || [])
+    .filter(item => item.poster_path)
+    .filter(item => item.overview)
+    .slice(0, row.limit)
+    .map(item => toVideo(item, tmdbType));
 
   if (OMDB_API_KEY) {
     for (let i = 0; i < results.length; i += 5) {
@@ -814,11 +837,7 @@ app.get("/manifest.json", (req, res) => {
   const catalogs = [];
 
   for (const platform of PLATFORMS) {
-    const platformRows = ["prime", "appletv"].includes(platform.id)
-      ? ROWS.filter(row => !["rent", "buy"].includes(row.id))
-      : ROWS;
-
-    for (const row of platformRows) {
+    for (const row of ROWS) {
       catalogs.push({
         id: `${platform.id}_movie_${row.id}`,
         type: "movie",
@@ -837,7 +856,8 @@ app.get("/manifest.json", (req, res) => {
     id: "com.ottuniverse.india",
     version: VERSION,
     name: "OTT Universe India",
-    description: "Discover movies and series reported as available on major OTT platforms in India.",
+    description:
+      "Indian OTT discovery with platform-specific movies, series, trending, top 10, new releases, upcoming and highest-rated catalogues.",
     resources: ["catalog", "meta"],
     types: ["movie", "series"],
     idPrefixes: ["tmdb:"],
