@@ -238,12 +238,19 @@ app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
     return json(res, { error: err.message });
   }
 });
+
 app.get("/manifest.json", (_req, res) => {
   const catalogs = [];
+
   for (const platform of PLATFORMS) {
     for (const type of ["movie", "series"]) {
       const tmdbType = type === "series" ? "tv" : "movie";
-      for (const row of ROWS) {
+
+      const platformRows = ["prime", "appletv"].includes(platform.id)
+        ? ROWS.filter(row => !["rent", "buy"].includes(row.id))
+        : ROWS;
+
+      for (const row of platformRows) {
         catalogs.push({
           type,
           id: `${platform.id}_${tmdbType}_${row.id}`,
@@ -253,9 +260,10 @@ app.get("/manifest.json", (_req, res) => {
       }
     }
   }
+
   json(res, {
     id: "com.ottuniverse.india",
-    version: "1.1.0",
+    version: "1.2.0",
     name: "OTT Universe India",
     description: "India OTT discovery. Availability data powered by JustWatch via TMDB; verify on the service before subscribing or renting.",
     resources: ["catalog", "meta"],
