@@ -12,8 +12,6 @@ const TMDB_TOKEN =
 
 const OMDB_API_KEY = process.env.OMDB_API_KEY || "";
 
-// India OTT platforms.
-// Apple TV Store is deliberately excluded from Apple TV+.
 const PLATFORMS = [
   { id: "netflix", name: "Netflix", match: /netflix/i },
   { id: "prime", name: "Prime Video", match: /amazon prime video|prime video/i },
@@ -24,7 +22,6 @@ const PLATFORMS = [
   { id: "appletv", name: "Apple TV+", match: /^apple tv\+?$/i }
 ];
 
-// Prime Video and Apple TV+ intentionally exclude Rent and Buy.
 const ROWS = [
   { id: "popular", name: "Popular", monetization: "flatrate", sort: "popularity.desc" },
   { id: "rated", name: "Highest Rated", monetization: "flatrate", sort: "vote_average.desc" },
@@ -82,7 +79,6 @@ async function requestJson(url, options = {}) {
   return data;
 }
 
-// TMDB API request.
 async function tmdb(path, params = {}) {
   if (!TMDB_TOKEN) {
     throw new Error("TMDB token is not configured.");
@@ -106,8 +102,15 @@ async function tmdb(path, params = {}) {
   );
 }
 
-// OMDb provides genuine IMDb ratings.
-// This requires the optional OMDB_API_KEY environment variable.
+async function optionalTmdb(path, params = {}) {
+  try {
+    return await tmdb(path, params);
+  } catch (error) {
+    console.error(`Optional TMDB request failed (${path}):`, error.message);
+    return null;
+  }
+}
+
 async function omdbByImdbId(imdbId) {
   if (!OMDB_API_KEY || !imdbId) {
     return null;
@@ -131,112 +134,81 @@ async function omdbByImdbId(imdbId) {
   });
 }
 
-function imageUrl(path, size) {
+function imageUrl(path, size = "w500") {
   return path ? `${IMAGE_BASE}/${size}${path}` : null;
 }
 
-// Convert TMDB movie/TV data into Stremio catalogue metadata.
+function validValue(value) {
+  return value && value !== "N/A" ? value : null;
+}
+
 function toVideo(item, tmdbType) {
   const isMovie = tmdbType === "movie";
-
-  const title = isMovie ? item.title : item.name;
   const date = isMovie ? item.release_date : item.first_air_date;
 
   return {
     id: `tmdb:${item.id}`,
     type: isMovie ? "movie" : "series",
-    name: title || "Untitled",
-    poster: imageUrl(item.poster_path, "w500"),
+    name: (isMovie ? item.title : item.name) || "Untitled",
+    poster: imageUrl(item.poster_path),
     background: imageUrl(item.backdrop_path, "w1280"),
     description: item.overview || "",
     releaseInfo: date ? date.slice(0, 4) : "",
     tmdbRating:
       typeof item.vote_average === "number"
         ? Number(item.vote_average.toFixed(1))
-        : null
+        : null,
+    tmdbVotes:
+      typeof item.vote_count === "number" ? item.vote_count : null
   };
 }
 
-// Find the matching provider in TMDB's India provider list.
 async function providerId(platform, tmdbType) {
   const data = await tmdb(`/watch/providers/${tmdbType}`, {
     watch_region: "IN",
     language: "en-US"
   });
 
-  const providers = data.results || [];
-
-  const match = providers.find(provider =>
+  const match = (data.results || []).find(provider =>
     platform.match.test(provider.provider_name || "")
   );
 
   return match ? match.provider_id : null;
 }
 
-// Verify availability for the specific title in India.
-async function hasProviderAccess(
-  platform,
-  tmdbType,
-  itemId,
-  monetization
-) {
+async function hasProviderAccess(platform, tmdbType, itemId, monetization) {
   const pid = await providerId(platform, tmdbType);
 
-  if (!pid) {
-    return false;
-  }
+  if (!pid) return false;
 
-  const details = await tmdb(
-    `/${tmdbType}/${itemId}/watch/providers`
-  );
-
-  const india = details.results?.IN || {};
-  const offers = india[monetization] || [];
+  const details = await tmdb(`/${tmdbType}/${itemId}/watch/providers`);
+  const offers = details.results?.IN?.[monetization] || [];
 
   return offers.some(provider => provider.provider_id === pid);
 }
 
-// Retrieve genuine IMDb information for a title.
 async function getImdbExtras(tmdbType, itemId) {
   try {
-    const externalIds = await tmdb(
-      `/${tmdbType}/${itemId}/external_ids`
-    );
-
+    const externalIds = await tmdb(`/${tmdbType}/${itemId}/external_ids`);
     const imdbId = externalIds.imdb_id;
 
-    if (!imdbId) {
-      return {};
-    }
+    if (!imdbId) return {};
 
     const result = {
       imdb_id: imdbId,
       imdbUrl: `https://www.imdb.com/title/${imdbId}/`,
-      links: [
-        {
-          name: "IMDb",
-          category: "imdb",
-          url: `https://www.imdb.com/title/${imdbId}/`
-        }
-      ]
+      links: [{
+        name: "IMDb",
+        category: "imdb",
+        url: `https://www.imdb.com/title/${imdbId}/`
+      }]
     };
 
     const imdbData = await omdbByImdbId(imdbId);
 
-    if (
-      imdbData &&
-      imdbData.imdbRating &&
-      imdbData.imdbRating !== "N/A"
-    ) {
-      result.imdbRating = imdbData.imdbRating;
-    }
-
-    if (
-      imdbData &&
-      imdbData.imdbVotes &&
-      imdbData.imdbVotes !== "N/A"
-    ) {
-      result.imdbVotes = imdbData.imdbVotes;
+    if (imdbData) {
+      result.imdbRating = validValue(imdbData.imdbRating);
+      result.imdbVotes = validValue(imdbData.imdbVotes);
     }
 
     return result;
@@ -246,38 +218,145 @@ async function getImdbExtras(tmdbType, itemId) {
   }
 }
 
-// Retrieve official trailers from TMDB's YouTube video records.
+// Cast, directors, writers and production crew.
+async function getCreditInformation(tmdbType, itemId) {
+  const credits = await optionalTmdb(`/${tmdbType}/${itemId}/credits`);
+
+  if (!credits) {
+    return {
+      cast: [],
+      castDetails: [],
+      director: [],
+      writers: [],
+      creators: [],
+      executiveProducers: [],
+      crewDetails: []
+    };
+  }
+
+  const castDetails = (credits.cast || [])
+    .slice(0, 15)
+    .map(person => ({
+      name: person.name,
+      character: person.character || "",
+      order: person.order,
+      profile: imageUrl(person.profile_path)
+    }));
+
+  const crew = credits.crew || [];
+
+  const directors = crew
+    .filter(person => person.job === "Director")
+    .map(person => person.name);
+
+  const writers = crew
+    .filter(person =>
+      ["Writer", "Screenplay", "Story", "Teleplay"].includes(person.job)
+    )
+    .map(person => person.name);
+
+  const selectedCrew = crew
+    .filter(person =>
+      [
+        "Director",
+        "Writer",
+        "Screenplay",
+        "Story",
+        "Teleplay",
+        "Executive Producer",
+        "Producer",
+        "Director of Photography",
+        "Original Music Composer"
+      ].includes(person.job)
+    )
+    .slice(0, 30)
+    .map(person => ({
+      name: person.name,
+      job: person.job,
+      department: person.department,
+      profile: imageUrl(person.profile_path)
+    }));
+
+  return {
+    cast: castDetails.map(person => person.name),
+    castDetails,
+    director: [...new Set(directors)],
+    writers: [...new Set(writers)],
+    creators: [],
+    executiveProducers: [
+      ...new Set(
+        crew
+          .filter(person => person.job === "Executive Producer")
+          .map(person => person.name)
+      )
+    ],
+    crewDetails: selectedCrew
+  };
+}
+
+async function getCertification(tmdbType, itemId) {
+  const endpoint = tmdbType === "movie"
+    ? `/movie/${itemId}/release_dates`
+    : `/tv/${itemId}/content_ratings`;
+
+  const data = await optionalTmdb(endpoint);
+
+  if (!data) return { certification: null, certificationCountry: null };
+
+  const results = data.results || [];
+
+  const india = results.find(item => item.iso_3166_1 === "IN");
+  const usa = results.find(item => item.iso_3166_1 === "US");
+
+  const selected = india || usa;
+
+  if (!selected) {
+    return { certification: null, certificationCountry: null };
+  }
+
+  let certification;
+
+  if (tmdbType === "movie") {
+    const dates = selected.release_dates || [];
+    certification =
+      dates.find(item => item.certification)?.certification || null;
+  } else {
+    certification = selected.rating || null;
+  }
+
+  return {
+    certification,
+    certificationCountry: certification
+      ? selected.iso_3166_1
+      : null
+  };
+}
+
+// Separate videos into their actual TMDB categories.
 function getTrailerInformation(details) {
-  const videos = details.videos?.results || [];
+  const videos = (details.videos?.results || [])
+    .filter(video => video.site === "YouTube" && video.key)
+    .sort((a, b) => {
+      if (a.official !== b.official) return a.official ? -1 : 1;
 
-  const youtubeVideos = videos.filter(video =>
-    video.site === "YouTube" && video.key
-  );
+      const priority = {
+        Trailer: 1,
+        Teaser: 2,
+        Clip: 3,
+        Featurette: 4
+      };
 
-  const sortVideos = list =>
-    list.sort((a, b) => {
-      if (a.official !== b.official) {
-        return a.official ? -1 : 1;
-      }
+      const typeDifference =
+        (priority[a.type] || 5) - (priority[b.type] || 5);
+
+      if (typeDifference !== 0) return typeDifference;
 
       return String(b.published_at || "").localeCompare(
         String(a.published_at || "")
       );
     });
 
-  const trailers = sortVideos(
-    youtubeVideos.filter(video => video.type === "Trailer")
-  );
-
-  const teasers = sortVideos(
-    youtubeVideos.filter(video => video.type === "Teaser")
-  );
-
-  const allVideos = [...trailers, ...teasers];
-
-  const chosen = allVideos[0] || null;
-
-  const formatted = allVideos.map(video => ({
+  const formatted = videos.map(video => ({
     name: video.name,
     site: video.site,
     key: video.key,
@@ -286,44 +365,38 @@ function getTrailerInformation(details) {
     url: `https://www.youtube.com/watch?v=${video.key}`
   }));
 
+  const trailers = formatted.filter(video => video.type === "Trailer");
+  const teasers = formatted.filter(video => video.type === "Teaser");
+  const clips = formatted.filter(video => video.type === "Clip");
+  const featurettes = formatted.filter(video => video.type === "Featurette");
+
+  const chosen = trailers[0] || teasers[0] || null;
+
+  const makeLinks = list => list.map(video => ({
+    name: video.name,
+    category: video.type,
+    url: video.url
+  }));
+
   return {
-    trailerUrl: chosen
-      ? `https://www.youtube.com/watch?v=${chosen.key}`
-      : null,
-
-    trailer: chosen
-      ? {
-          name: chosen.name,
-          site: chosen.site,
-          key: chosen.key,
-          type: chosen.type,
-          official: Boolean(chosen.official),
-          url: `https://www.youtube.com/watch?v=${chosen.key}`
-        }
-      : null,
-
+    trailerUrl: chosen?.url || null,
+    trailer: chosen,
     trailers: formatted,
-
-    trailerLinks: formatted.map(video => ({
-      name: video.name,
-      category: "Trailer",
-      url: video.url
-    }))
+    trailerLinks: makeLinks(trailers),
+    teaserLinks: makeLinks(teasers),
+    clipLinks: makeLinks(clips),
+    featuretteLinks: makeLinks(featurettes)
   };
 }
 
-// Build a catalogue for one OTT platform, media type and row.
 async function catalog(platform, tmdbType, row) {
   const pid = await providerId(platform, tmdbType);
 
-  if (!pid) {
-    return [];
-  }
+  if (!pid) return [];
 
   let data;
 
   if (row.id === "trending") {
-    // Actual TMDB trending results, not the Popular sorting.
     data = await tmdb(`/trending/${tmdbType}/week`, {
       language: "en-US"
     });
@@ -344,7 +417,6 @@ async function catalog(platform, tmdbType, row) {
     if (row.id === "new") {
       const today = new Date();
       const past = new Date();
-
       past.setMonth(past.getMonth() - 18);
 
       const todayString = today.toISOString().slice(0, 10);
@@ -366,48 +438,33 @@ async function catalog(platform, tmdbType, row) {
   const candidates = (data.results || []).slice(0, 30);
   const verified = [];
 
-  // Verify individual title availability in India.
   for (let i = 0; i < candidates.length; i += 5) {
     const batch = candidates.slice(i, i + 5);
 
     const checks = await Promise.all(
       batch.map(item =>
-        hasProviderAccess(
-          platform,
-          tmdbType,
-          item.id,
-          row.monetization
-        ).catch(error => {
-          console.error(
-            `Availability check failed for ${item.id}:`,
-            error.message
-          );
-
-          return false;
-        })
+        hasProviderAccess(platform, tmdbType, item.id, row.monetization)
+          .catch(error => {
+            console.error(`Availability check failed for ${item.id}:`, error.message);
+            return false;
+          })
       )
     );
 
     batch.forEach((item, index) => {
-      if (checks[index]) {
-        verified.push(toVideo(item, tmdbType));
-      }
+      if (checks[index]) verified.push(toVideo(item, tmdbType));
     });
   }
 
   const results = verified.slice(0, 20);
 
-  // Add IMDb ratings only when the optional OMDb key is configured.
   if (OMDB_API_KEY) {
     for (let i = 0; i < results.length; i += 5) {
       const batch = results.slice(i, i + 5);
 
       const extras = await Promise.all(
         batch.map(item =>
-          getImdbExtras(
-            tmdbType,
-            item.id.replace("tmdb:", "")
-          )
+          getImdbExtras(tmdbType, item.id.replace("tmdb:", ""))
         )
       );
 
@@ -420,21 +477,16 @@ async function catalog(platform, tmdbType, row) {
   return results;
 }
 
-// Match a Stremio catalogue ID to a platform and row.
 function getPlatformAndRow(catalogId) {
   for (const platform of PLATFORMS) {
     for (const row of ROWS) {
       if (
         ["prime", "appletv"].includes(platform.id) &&
         ["rent", "buy"].includes(row.id)
-      ) {
-        continue;
-      }
+      ) continue;
 
       for (const type of ["movie", "tv"]) {
-        const expected = `${platform.id}_${type}_${row.id}`;
-
-        if (catalogId === expected) {
+        if (catalogId === `${platform.id}_${type}_${row.id}`) {
           return { platform, row, type };
         }
       }
@@ -444,7 +496,6 @@ function getPlatformAndRow(catalogId) {
   return null;
 }
 
-// Home endpoint.
 app.get("/", (req, res) => {
   res.json({
     status: "ok",
@@ -453,26 +504,22 @@ app.get("/", (req, res) => {
   });
 });
 
-// Health endpoint.
 app.get("/health", (req, res) => {
   res.json({
     status: "ok",
     addon: "OTT Universe India",
+    version: "1.4.0",
     tokenConfigured: Boolean(TMDB_TOKEN),
     imdbRatingsConfigured: Boolean(OMDB_API_KEY)
   });
 });
 
-// Debug India provider list.
 app.get("/debug/providers/:type", async (req, res) => {
   try {
-    const type =
-      req.params.type === "series" ? "tv" : req.params.type;
+    const type = req.params.type === "series" ? "tv" : req.params.type;
 
     if (!["movie", "tv"].includes(type)) {
-      return res.status(400).json({
-        error: "Type must be movie or series."
-      });
+      return res.status(400).json({ error: "Type must be movie or series." });
     }
 
     const data = await tmdb(`/watch/providers/${type}`, {
@@ -493,57 +540,43 @@ app.get("/debug/providers/:type", async (req, res) => {
   }
 });
 
-// Debug a specific catalogue.
-app.get(
-  "/debug/catalog/:platform/:type/:row",
-  async (req, res) => {
-    try {
-      const platform = PLATFORMS.find(
-        item => item.id === req.params.platform
-      );
+app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
+  try {
+    const platform = PLATFORMS.find(item => item.id === req.params.platform);
+    const type = req.params.type === "series" ? "tv" : req.params.type;
+    const row = ROWS.find(item => item.id === req.params.row);
 
-      const type =
-        req.params.type === "series" ? "tv" : req.params.type;
-
-      const row = ROWS.find(
-        item => item.id === req.params.row
-      );
-
-      if (!platform || !row || !["movie", "tv"].includes(type)) {
-        return res.status(400).json({
-          error: "Unknown platform, type or row."
-        });
-      }
-
-      if (
-        ["prime", "appletv"].includes(platform.id) &&
-        ["rent", "buy"].includes(row.id)
-      ) {
-        return res.status(400).json({
-          error: "Rent and Buy are disabled for this platform."
-        });
-      }
-
-      const pid = await providerId(platform, type);
-      const metas = await catalog(platform, type, row);
-
-      res.json({
-        platform: platform.name,
-        providerId: pid,
-        region: "IN",
-        type,
-        row: row.id,
-        monetization: row.monetization,
-        resultCount: metas.length,
-        metas
-      });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+    if (!platform || !row || !["movie", "tv"].includes(type)) {
+      return res.status(400).json({ error: "Unknown platform, type or row." });
     }
-  }
-);
 
-// Stremio manifest.
+    if (
+      ["prime", "appletv"].includes(platform.id) &&
+      ["rent", "buy"].includes(row.id)
+    ) {
+      return res.status(400).json({
+        error: "Rent and Buy are disabled for this platform."
+      });
+    }
+
+    const pid = await providerId(platform, type);
+    const metas = await catalog(platform, type, row);
+
+    res.json({
+      platform: platform.name,
+      providerId: pid,
+      region: "IN",
+      type,
+      row: row.id,
+      monetization: row.monetization,
+      resultCount: metas.length,
+      metas
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get("/manifest.json", (req, res) => {
   const catalogs = [];
 
@@ -569,10 +602,9 @@ app.get("/manifest.json", (req, res) => {
 
   res.json({
     id: "com.ottuniverse.india",
-    version: "1.3.0",
+    version: "1.4.0",
     name: "OTT Universe India",
-    description:
-      "Discover movies and series reported as available on major OTT platforms in India.",
+    description: "Discover movies and series reported as available on major OTT platforms in India.",
     resources: ["catalog", "meta"],
     types: ["movie", "series"],
     idPrefixes: ["tmdb:"],
@@ -580,11 +612,9 @@ app.get("/manifest.json", (req, res) => {
   });
 });
 
-// Stremio catalogue endpoint.
 app.get("/catalog/:type/:id.json", async (req, res) => {
   try {
-    const type =
-      req.params.type === "series" ? "tv" : req.params.type;
+    const type = req.params.type === "series" ? "tv" : req.params.type;
 
     if (!["movie", "tv"].includes(type)) {
       return res.json({ metas: [] });
@@ -596,41 +626,26 @@ app.get("/catalog/:type/:id.json", async (req, res) => {
       return res.json({ metas: [] });
     }
 
-    const metas = await catalog(
-      selected.platform,
-      type,
-      selected.row
-    );
-
+    const metas = await catalog(selected.platform, type, selected.row);
     res.json({ metas });
   } catch (error) {
     console.error("Catalogue error:", error.message);
-
-    res.status(500).json({
-      metas: [],
-      error: error.message
-    });
+    res.status(500).json({ metas: [], error: error.message });
   }
 });
 
-// Detailed movie and series metadata.
 app.get("/meta/:type/:id.json", async (req, res) => {
   try {
-    const type =
-      req.params.type === "series" ? "tv" : req.params.type;
+    const type = req.params.type === "series" ? "tv" : req.params.type;
 
     if (!["movie", "tv"].includes(type)) {
-      return res.status(400).json({
-        error: "Type must be movie or series."
-      });
+      return res.status(400).json({ error: "Type must be movie or series." });
     }
 
     const tmdbId = String(req.params.id).replace(/^tmdb:/, "");
 
     if (!/^\d+$/.test(tmdbId)) {
-      return res.status(400).json({
-        error: "Invalid TMDB ID."
-      });
+      return res.status(400).json({ error: "Invalid TMDB ID." });
     }
 
     const details = await tmdb(`/${type}/${tmdbId}`, {
@@ -639,37 +654,49 @@ app.get("/meta/:type/:id.json", async (req, res) => {
     });
 
     const isMovie = type === "movie";
+    const imdbId = details.external_ids?.imdb_id || details.imdb_id || null;
 
-    const imdbId =
-      details.external_ids?.imdb_id ||
-      details.imdb_id ||
-      null;
-
-    const imdbData = imdbId
-      ? await omdbByImdbId(imdbId)
-      : null;
+    const [imdbData, credits, certification] = await Promise.all([
+      imdbId ? omdbByImdbId(imdbId) : Promise.resolve(null),
+      getCreditInformation(type, tmdbId),
+      getCertification(type, tmdbId)
+    ]);
 
     const trailerInformation = getTrailerInformation(details);
+
+    const spokenLanguages = (details.spoken_languages || [])
+      .map(language => ({
+        name: language.name,
+        englishName: language.english_name,
+        code: language.iso_639_1
+      }));
 
     const meta = {
       id: `tmdb:${details.id}`,
       type: isMovie ? "movie" : "series",
       name: isMovie ? details.title : details.name,
-      poster: imageUrl(details.poster_path, "w500"),
+      poster: imageUrl(details.poster_path),
       background: imageUrl(details.backdrop_path, "w1280"),
       description: details.overview || "",
+      tagline: details.tagline || "",
 
       releaseInfo: (
         isMovie ? details.release_date : details.first_air_date
       )?.slice(0, 4) || "",
 
-      genres: (details.genres || []).map(
-        genre => genre.name
-      ),
+      released: isMovie
+        ? details.release_date || null
+        : details.first_air_date || null,
+
+      genres: (details.genres || []).map(genre => genre.name),
 
       country: (details.production_countries || [])
         .map(country => country.name)
         .join(", "),
+
+      originalLanguage: details.original_language || null,
+      spokenLanguages,
+      language: spokenLanguages.map(item => item.name).join(", "),
 
       tmdbRating:
         typeof details.vote_average === "number"
@@ -682,30 +709,30 @@ app.get("/meta/:type/:id.json", async (req, res) => {
           : null,
 
       imdb_id: imdbId,
+      imdbUrl: imdbId ? `https://www.imdb.com/title/${imdbId}/` : null,
 
-      imdbUrl: imdbId
-        ? `https://www.imdb.com/title/${imdbId}/`
-        : null,
+      imdbRating: validValue(imdbData?.imdbRating),
+      imdbVotes: validValue(imdbData?.imdbVotes),
+      awards: validValue(imdbData?.Awards),
 
-      imdbRating:
-        imdbData?.imdbRating && imdbData.imdbRating !== "N/A"
-          ? imdbData.imdbRating
-          : null,
+      links: imdbId ? [{
+        name: "IMDb",
+        category: "imdb",
+        url: `https://www.imdb.com/title/${imdbId}/`
+      }] : [],
 
-      imdbVotes:
-        imdbData?.imdbVotes && imdbData.imdbVotes !== "N/A"
-          ? imdbData.imdbVotes
-          : null,
+      ...credits,
+      ...certification,
+      ...trailerInformation,
 
-      links: imdbId
-        ? [{
-            name: "IMDb",
-            category: "imdb",
-            url: `https://www.imdb.com/title/${imdbId}/`
-          }]
-        : [],
+      productionCompanies: (details.production_companies || [])
+        .map(company => ({
+          name: company.name,
+          country: company.origin_country,
+          logo: imageUrl(company.logo_path, "w300")
+        })),
 
-      ...trailerInformation
+      homepage: details.homepage || null
     };
 
     if (isMovie) {
@@ -713,28 +740,42 @@ app.get("/meta/:type/:id.json", async (req, res) => {
         typeof details.runtime === "number"
           ? `${details.runtime} min`
           : null;
+
+      meta.runtimeMinutes = details.runtime || null;
     } else {
-      meta.numberOfSeasons =
-        details.number_of_seasons ?? null;
+      const creators = (details.created_by || []).map(person => ({
+        name: person.name,
+        id: person.id,
+        profile: imageUrl(person.profile_path)
+      }));
 
-      meta.numberOfEpisodes =
-        details.number_of_episodes ?? null;
+      meta.creators = creators.map(person => person.name);
+      meta.creatorDetails = creators;
 
-      meta.firstAirDate =
-        details.first_air_date || null;
+      meta.networks = (details.networks || []).map(network => ({
+        name: network.name,
+        logo: imageUrl(network.logo_path, "w300"),
+        country: network.origin_country
+      }));
 
-      meta.lastAirDate =
-        details.last_air_date || null;
+      meta.numberOfSeasons = details.number_of_seasons ?? null;
+      meta.numberOfEpisodes = details.number_of_episodes ?? null;
+      meta.firstAirDate = details.first_air_date || null;
+      meta.lastAirDate = details.last_air_date || null;
+      meta.status = details.status || null;
 
-      meta.status =
-        details.status || null;
+      const episodeRuntime = details.episode_run_time || [];
+
+      meta.episodeRuntime = episodeRuntime.length
+        ? `${episodeRuntime[0]} min`
+        : null;
 
       meta.seasons = (details.seasons || []).map(season => ({
         seasonNumber: season.season_number,
         name: season.name,
         episodeCount: season.episode_count,
         airDate: season.air_date || null,
-        poster: imageUrl(season.poster_path, "w500")
+        poster: imageUrl(season.poster_path)
       }));
 
       meta.lastEpisode = details.last_episode_to_air
@@ -759,15 +800,10 @@ app.get("/meta/:type/:id.json", async (req, res) => {
     res.json({ meta });
   } catch (error) {
     console.error("Metadata error:", error.message);
-
-    res.status(500).json({
-      error: error.message
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log(
-    `OTT Universe India addon listening on port ${PORT}`
-  );
+  console.log(`OTT Universe India addon listening on port ${PORT}`);
 });
