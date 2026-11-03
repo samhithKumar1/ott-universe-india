@@ -12,7 +12,7 @@ const TMDB_TOKEN =
 
 const OMDB_API_KEY = process.env.OMDB_API_KEY || "";
 
-const VERSION = "1.5.0";
+const VERSION = "2.0.0";
 
 // Supported OTT platforms in India.
 const PLATFORMS = [
