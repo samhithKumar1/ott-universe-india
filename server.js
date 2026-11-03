@@ -12,6 +12,7 @@ const TMDB_TOKEN =
 
 const OMDB_API_KEY = process.env.OMDB_API_KEY || "";
 
+// Supported OTT platforms in India.
 const PLATFORMS = [
   { id: "netflix", name: "Netflix", match: /netflix/i },
   { id: "prime", name: "Prime Video", match: /amazon prime video|prime video/i },
@@ -294,6 +295,7 @@ async function getCreditInformation(tmdbType, itemId) {
   };
 }
 
+// Improved India-first certification with US fallback.
 async function getCertification(tmdbType, itemId) {
   const endpoint = tmdbType === "movie"
     ? `/movie/${itemId}/release_dates`
@@ -301,74 +303,223 @@ async function getCertification(tmdbType, itemId) {
 
   const data = await optionalTmdb(endpoint);
 
-  if (!data) return { certification: null, certificationCountry: null };
+  if (!data) {
+    return {
+      certification: null,
+      certificationCountry: null
+    };
+  }
 
   const results = data.results || [];
 
-  const india = results.find(item => item.iso_3166_1 === "IN");
-  const usa = results.find(item => item.iso_3166_1 === "US");
+  function findCertification(countryCode) {
+    const country = results.find(
+      item => item.iso_3166_1 === countryCode
+    );
 
-  const selected = india || usa;
+    if (!country) return null;
 
-  if (!selected) {
-    return { certification: null, certificationCountry: null };
+    if (tmdbType === "tv") {
+      const rating = String(country.rating || "").trim();
+
+      return rating
+        ? {
+            certification: rating,
+            certificationCountry: countryCode
+          }
+        : null;
+    }
+
+    const dates = (country.release_dates || [])
+      .filter(item => String(item.certification || "").trim());
+
+    const priority = {
+      3: 1,
+      4: 2,
+      2: 3,
+      1: 4,
+      5: 5,
+      6: 6
+    };
+
+    dates.sort((a, b) => {
+      const priorityDifference =
+        (priority[a.type] || 99) - (priority[b.type] || 99);
+
+      if (priorityDifference !== 0) {
+        return priorityDifference;
+      }
+
+      return String(b.release_date || "").localeCompare(
+        String(a.release_date || "")
+      );
+    });
+
+    const selected = dates[0];
+
+    if (!selected) return null;
+
+    return {
+      certification: String(selected.certification).trim(),
+      certificationCountry: countryCode
+    };
   }
 
-  let certification;
+  const india = findCertification("IN");
 
-  if (tmdbType === "movie") {
-    const dates = selected.release_dates || [];
-    certification =
-      dates.find(item => item.certification)?.certification || null;
-  } else {
-    certification = selected.rating || null;
-  }
+  if (india) return india;
+
+  const usa = findCertification("US");
+
+  if (usa) return usa;
 
   return {
-    certification,
-    certificationCountry: certification
-      ? selected.iso_3166_1
-      : null
+    certification: null,
+    certificationCountry: null
   };
 }
 
-// Separate videos into their actual TMDB categories.
+// Find TV episode runtime using series data or season episode data.
+async function getSeriesEpisodeRuntime(details, tmdbId) {
+  const direct = (details.episode_run_time || [])
+    .filter(value => Number.isFinite(value) && value > 0);
+
+  if (direct.length) {
+    const minutes = Math.round(
+      direct.reduce((sum, value) => sum + value, 0) / direct.length
+    );
+
+    return {
+      episodeRuntime: `${minutes} min`,
+      episodeRuntimeMinutes: minutes,
+      episodeRuntimeSource: "series"
+    };
+  }
+
+  const seasonNumbers = (details.seasons || [])
+    .map(season => season.season_number)
+    .filter(number => Number.isInteger(number) && number > 0)
+    .sort((a, b) => b - a);
+
+  const seasonsToCheck = [
+    ...new Set([
+      seasonNumbers[0],
+      1
+    ].filter(number => Number.isInteger(number)))
+  ];
+
+  for (const seasonNumber of seasonsToCheck) {
+    const season = await optionalTmdb(
+      `/tv/${tmdbId}/season/${seasonNumber}`
+    );
+
+    if (!season) continue;
+
+    const runtimes = (season.episodes || [])
+      .map(episode => episode.runtime)
+      .filter(value =>
+        Number.isFinite(value) && value > 0
+      );
+
+    if (!runtimes.length) continue;
+
+    const sorted = [...runtimes].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+
+    const median = sorted.length % 2
+      ? sorted[middle]
+      : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+
+    return {
+      episodeRuntime: `${median} min`,
+      episodeRuntimeMinutes: median,
+      episodeRuntimeSource: `season ${seasonNumber}`
+    };
+  }
+
+  return {
+    episodeRuntime: null,
+    episodeRuntimeMinutes: null,
+    episodeRuntimeSource: null
+  };
+}
+
+// Categorize available YouTube videos.
 function getTrailerInformation(details) {
   const videos = (details.videos?.results || [])
-    .filter(video => video.site === "YouTube" && video.key)
-    .sort((a, b) => {
-      if (a.official !== b.official) return a.official ? -1 : 1;
+    .filter(video => video.site === "YouTube" && video.key);
 
-      const priority = {
-        Trailer: 1,
-        Teaser: 2,
-        Clip: 3,
-        Featurette: 4
-      };
+  function classifyVideo(video) {
+    const name = String(video.name || "").toLowerCase();
+    const originalType = String(video.type || "");
 
-      const typeDifference =
-        (priority[a.type] || 5) - (priority[b.type] || 5);
+    if (originalType === "Trailer" || originalType === "Teaser") {
+      return originalType;
+    }
 
-      if (typeDifference !== 0) return typeDifference;
+    if (
+      originalType === "Opening Credits" ||
+      /opening credits|title sequence|theme song|opening title/.test(name)
+    ) {
+      return "Opening Credits";
+    }
 
-      return String(b.published_at || "").localeCompare(
-        String(a.published_at || "")
-      );
-    });
+    if (
+      originalType === "Behind the Scenes" ||
+      /behind.the.scenes|making.of|production diary|on the set/.test(name)
+    ) {
+      return "Behind the Scenes";
+    }
+
+    if (
+      originalType === "Clip" ||
+      /\bclip\b|\bscene\b|sneak peek|extended preview|movie preview/.test(name)
+    ) {
+      return "Clip";
+    }
+
+    if (originalType === "Featurette") {
+      return "Featurette";
+    }
+
+    return originalType || "Other";
+  }
 
   const formatted = videos.map(video => ({
     name: video.name,
     site: video.site,
     key: video.key,
-    type: video.type,
+    type: classifyVideo(video),
     official: Boolean(video.official),
     url: `https://www.youtube.com/watch?v=${video.key}`
   }));
 
-  const trailers = formatted.filter(video => video.type === "Trailer");
-  const teasers = formatted.filter(video => video.type === "Teaser");
-  const clips = formatted.filter(video => video.type === "Clip");
-  const featurettes = formatted.filter(video => video.type === "Featurette");
+  const priority = {
+    Trailer: 1,
+    Teaser: 2,
+    Clip: 3,
+    Featurette: 4,
+    "Behind the Scenes": 5,
+    "Opening Credits": 6,
+    Other: 7
+  };
+
+  formatted.sort((a, b) => {
+    if (a.official !== b.official) {
+      return a.official ? -1 : 1;
+    }
+
+    return (priority[a.type] || 99) -
+      (priority[b.type] || 99);
+  });
+
+  const trailers = formatted.filter(v => v.type === "Trailer");
+  const teasers = formatted.filter(v => v.type === "Teaser");
+  const clips = formatted.filter(v => v.type === "Clip");
+  const featurettes = formatted.filter(v => v.type === "Featurette");
+  const behindScenes = formatted.filter(v => v.type === "Behind the Scenes");
+  const openingCredits = formatted.filter(v => v.type === "Opening Credits");
+  const others = formatted.filter(v => v.type === "Other");
 
   const chosen = trailers[0] || teasers[0] || null;
 
@@ -382,6 +533,277 @@ function getTrailerInformation(details) {
     trailerUrl: chosen?.url || null,
     trailer: chosen,
     trailers: formatted,
+    trailerLinks: makeLinks(trailers),
+    teaserLinks: makeLinks(teasers),
+    clipLinks: makeLinks(clips),
+    featuretteLinks: makeLinks(featurettes),
+    behindTheScenesLinks: makeLinks(behindScenes),
+    openingCreditsLinks: makeLinks(openingCredits),
+    otherVideoLinks: makeLinks(others)
+  };
+}
+
+async function catalog(platform, tmdbType, row) {
+  const pid = await providerId(platform, tmdbType);
+
+  if (!pid) return [];
+
+  let data;
+
+  if (row.id === "trending") {
+    data = await tmdb(`/trending/${tmdbType}/week`, {
+      language: "en-US"
+    });
+  } else {
+    const params = {
+      watch_region: "IN",
+      with_watch_providers: pid,
+      with_watch_monetization_types: row.monetization,
+      sort_by: row.sort,
+      page: 1,
+      language: "en-US"
+    };
+
+    if (row.id === "rated") {
+      params["vote_count.gte"] = 100;
+    }
+
+    if (row.id === "new") {
+      const today = new Date();
+      const past = new Date();
+      past.setMonth(past.getMonth() - 18);
+
+      const todayString = today.toISOString().slice(0, 10);
+      const pastString = past.toISOString().slice(0, 10);
+
+      if (tmdbType === "movie") {
+        params["primary_release_date.gte"] = pastString;
+        params["primary_release_date.lte"] = todayString;
+      } else {
+        params["first_air_date.gte"] = pastString;
+        params["first_air_date.lte"] = todayString;
+        params.sort_by = "first_air_date.desc";
+      }
+    }
+
+    data = await tmdb(`/discover/${tmdbType}`, params);
+  }
+
+  const candidates = (data.results || []).slice(0, 30);
+  const verified = [];
+
+  for (let i = 0; i < candidates.length; i += 5) {
+    const batch = candidates.slice(i, i + 5);
+
+    const checks = await Promise.all(
+      batch.map(item =>
+        hasProviderAccess(platform, tmdbType, item.id, row.monetization)
+          .catch(error => {
+            console.error(
+              `Availability check failed for ${item.id}:`,
+              error.message
+            );
+            return false;
+          })
+      )
+    );
+
+    batch.forEach((item, index) => {
+      if (checks[index]) verified.push(toVideo(item, tmdbType));
+    });
+  }
+
+  const results = verified.slice(0, 20);
+
+  if (OMDB_API_KEY) {
+    for (let i = 0; i < results.length; i += 5) {
+      const batch = results.slice(i, i + 5);
+
+      const extras = await Promise.all(
+        batch.map(item =>
+          getImdbExtras(tmdbType, item.id.replace("tmdb:", ""))
+        )
+      );
+
+      batch.forEach((item, index) => {
+        Object.assign(item, extras[index]);
+      });
+    }
+  }
+
+  return results;
+}
+
+function getPlatformAndRow(catalogId) {
+  for (const platform of PLATFORMS) {
+    for (const row of ROWS) {
+      if (
+        ["prime", "appletv"].includes(platform.id) &&
+        ["rent", "buy"].includes(row.id)
+      ) continue;
+
+      for (const type of ["movie", "tv"]) {
+        if (catalogId === `${platform.id}_${type}_${row.id}`) {
+          return { platform, row, type };
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+app.get("/", (req, res) => {
+  res.json({
+    status: "ok",
+    addon: "OTT Universe India",
+    manifest: "/manifest.json"
+  });
+});
+
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    addon: "OTT Universe India",
+    version: "1.5.0",
+    tokenConfigured: Boolean(TMDB_TOKEN),
+    imdbRatingsConfigured: Boolean(OMDB_API_KEY)
+  });
+});
+
+app.get("/debug/providers/:type", async (req, res) => {
+  try {
+    const type = req.params.type === "series"
+      ? "tv"
+      : req.params.type;
+
+    if (!["movie", "tv"].includes(type)) {
+      return res.status(400).json({
+        error: "Type must be movie or series."
+      });
+    }
+
+    const data = await tmdb(`/watch/providers/${type}`, {
+      watch_region: "IN",
+      language: "en-US"
+    });
+
+    res.json({
+      region: "IN",
+      type,
+      providers: (data.results || []).map(provider => ({
+        id: provider.provider_id,
+        name: provider.provider_name
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/debug/catalog/:platform/:type/:row", async (req, res) => {
+  try {
+    const platform = PLATFORMS.find(
+      item => item.id === req.params.platform
+    );
+
+    const type = req.params.type === "series"
+      ? "tv"
+      : req.params.type;
+
+    const row = ROWS.find(item => item.id === req.params.row);
+
+    if (!platform || !row || !["movie", "tv"].includes(type)) {
+      return res.status(400).json({
+        error: "Unknown platform, type or row."
+      });
+    }
+
+    if (
+      ["prime", "appletv"].includes(platform.id) &&
+      ["rent", "buy"].includes(row.id)
+    ) {
+      return res.status(400).json({
+        error: "Rent and Buy are disabled for this platform."
+      });
+    }
+
+    const pid = await providerId(platform, type);
+    const metas = await catalog(platform, type, row);
+
+    res.json({
+      platform: platform.name,
+      providerId: pid,
+      region: "IN",
+      type,
+      row: row.id,
+      monetization: row.monetization,
+      resultCount: metas.length,
+      metas
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/manifest.json", (req, res) => {
+  const catalogs = [];
+
+  for (const platform of PLATFORMS) {
+    const platformRows = ["prime", "appletv"].includes(platform.id)
+      ? ROWS.filter(row => !["rent", "buy"].includes(row.id))
+      : ROWS;
+
+    for (const row of platformRows) {
+      catalogs.push({
+        id: `${platform.id}_movie_${row.id}`,
+        type: "movie",
+        name: `${platform.name} - ${row.name}`
+      });
+
+      catalogs.push({
+        id: `${platform.id}_tv_${row.id}`,
+        type: "series",
+        name: `${platform.name} - ${row.name}`
+      });
+    }
+  }
+
+  res.json({
+    id: "com.ottuniverse.india",
+    version: "1.5.0",
+    name: "OTT Universe India",
+    description: "Discover movies and series reported as available on major OTT platforms in India.",
+    resources: ["catalog", "meta"],
+    types: ["movie", "series"],
+    idPrefixes: ["tmdb:"],
+    catalogs
+  });
+});
+
+app.get("/catalog/:type/:id.json", async (req, res) => {
+  try {
+    const type = req.params.type === "series"
+      ? "tv"
+      : req.params.type;
+
+    if (!["movie", "tv"].includes(type)) {
+      return res.json({ metas: [] });
+    }
+
+    const selected = getPlatformAndRow(req.params.id);
+
+    if (!selected || selected.type !== type) {
+      return res.json({ metas: [] });
+    }
+
+    const metas = await catalog(
+      selected.platform,
+      type,
+      selected.row
+    );
+
+    res.
     trailerLinks: makeLinks(trailers),
     teaserLinks: makeLinks(teasers),
     clipLinks: makeLinks(clips),
