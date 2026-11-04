@@ -2,7 +2,7 @@ const express = require("express");
 
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = "2.1.1";
+const VERSION = "2.1.0";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
@@ -14,6 +14,9 @@ const PROVIDERS = [
   { id: "sony_liv", name: "Sony LIV", aliases: ["Sony LIV", "SonyLIV"] },
   { id: "aha", name: "Aha", aliases: ["aha", "Aha Video"] },
   { id: "apple_tv_plus", name: "Apple TV+", aliases: ["Apple TV+", "Apple TV Plus"] },
+  { id: "sun_nxt", name: "Sun NXT", aliases: ["Sun NXT"] },
+  { id: "etv_win", name: "ETV Win", aliases: ["ETV Win"] },
+  { id: "hoichoi", name: "Hoichoi", aliases: ["Hoichoi"] },
   { id: "lionsgate_play", name: "Lionsgate Play", aliases: ["Lionsgate Play"] }
 ];
 
@@ -234,13 +237,11 @@ function toMetaPreview(item, type) {
 function buildDiscoverParams(definition, page) {
   const today = isoDate(new Date());
   const params = {
-  page,
-  watch_region: "IN"
-};
+    page,
+    include_adult: "false",
+    watch_region: "IN"
+  };
 
-if (definition.type === "movie") {
-  params.include_adult = "false";
-}
   if (definition.row === "popular") {
     params.sort_by = "popularity.desc";
   } else if (definition.row === "highest") {
@@ -294,8 +295,7 @@ async function getCatalog(type, catalogId, extraString) {
   const params = buildDiscoverParams(definition, page);
 
   if (definition.providerId) {
-    const providerMediaType = type === "series" ? "tv" : "movie";
-const matches = await getProviderMatches(providerMediaType);
+    const matches = await getProviderMatches(type);
     const provider = matches.find((item) => item.id === definition.providerId);
     if (!provider || !provider.providerId) {
       return { metas: [] };
