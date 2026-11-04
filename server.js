@@ -14,9 +14,6 @@ const PROVIDERS = [
   { id: "sony_liv", name: "Sony LIV", aliases: ["Sony LIV", "SonyLIV"] },
   { id: "aha", name: "Aha", aliases: ["aha", "Aha Video"] },
   { id: "apple_tv_plus", name: "Apple TV+", aliases: ["Apple TV+", "Apple TV Plus"] },
-  { id: "sun_nxt", name: "Sun NXT", aliases: ["Sun NXT"] },
-  { id: "etv_win", name: "ETV Win", aliases: ["ETV Win"] },
-  { id: "hoichoi", name: "Hoichoi", aliases: ["Hoichoi"] },
   { id: "lionsgate_play", name: "Lionsgate Play", aliases: ["Lionsgate Play"] }
 ];
 
@@ -237,11 +234,13 @@ function toMetaPreview(item, type) {
 function buildDiscoverParams(definition, page) {
   const today = isoDate(new Date());
   const params = {
-    page,
-    include_adult: "false",
-    watch_region: "IN"
-  };
+  page,
+  watch_region: "IN"
+};
 
+if (definition.type === "movie") {
+  params.include_adult = "false";
+}
   if (definition.row === "popular") {
     params.sort_by = "popularity.desc";
   } else if (definition.row === "highest") {
