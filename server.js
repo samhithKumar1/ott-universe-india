@@ -294,7 +294,8 @@ async function getCatalog(type, catalogId, extraString) {
   const params = buildDiscoverParams(definition, page);
 
   if (definition.providerId) {
-    const matches = await getProviderMatches(type);
+    const providerMediaType = type === "series" ? "tv" : "movie";
+const matches = await getProviderMatches(providerMediaType);
     const provider = matches.find((item) => item.id === definition.providerId);
     if (!provider || !provider.providerId) {
       return { metas: [] };
