@@ -1,8 +1,9 @@
+
 const express = require("express");
 
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = "2.1.1";
+const VERSION = "2.1.2";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
@@ -18,6 +19,7 @@ const PROVIDERS = [
 ];
 
 const cache = new Map();
+
 const CACHE_TTL = {
   providers: 12 * 60 * 60 * 1000,
   catalog: 20 * 60 * 1000,
@@ -44,36 +46,48 @@ function normalizeName(value) {
 }
 
 function getAuthConfig() {
-  // TMDB v4 Read Access Token is sent as a Bearer token.
   if (process.env.TMDB_READ_ACCESS_TOKEN) {
     return {
       mode: "v4_bearer",
-      headers: { Authorization: `Bearer ${process.env.TMDB_READ_ACCESS_TOKEN}` }
+      headers: {
+        Authorization: `Bearer ${process.env.TMDB_READ_ACCESS_TOKEN}`
+      }
     };
   }
 
-  // TMDB v3 API Key is sent as the api_key query parameter, not as a Bearer token.
   if (process.env.TMDB_API_KEY) {
     return {
       mode: "v3_api_key",
-      query: { api_key: process.env.TMDB_API_KEY },
+      query: {
+        api_key: process.env.TMDB_API_KEY
+      },
       headers: {}
     };
   }
 
-  return { mode: "missing", headers: {} };
+  return {
+    mode: "missing",
+    headers: {}
+  };
 }
 
 async function tmdb(path, params = {}) {
   const auth = getAuthConfig();
+
   if (auth.mode === "missing") {
-    const error = new Error("TMDB credential is not configured in Render.");
+    const error = new Error(
+      "TMDB credential is not configured in Render."
+    );
     error.status = 503;
     throw error;
   }
 
   const url = new URL(`${TMDB_BASE}${path}`);
-  for (const [key, value] of Object.entries({ ...auth.query, ...params })) {
+
+  for (const [key, value] of Object.entries({
+    ...auth.query,
+    ...params
+  })) {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, String(value));
     }
@@ -88,6 +102,7 @@ async function tmdb(path, params = {}) {
   });
 
   let data;
+
   try {
     data = await response.json();
   } catch {
@@ -96,10 +111,13 @@ async function tmdb(path, params = {}) {
 
   if (!response.ok) {
     const error = new Error(
-      data.status_message || `TMDB request failed with HTTP ${response.status}`
+      data.status_message ||
+      `TMDB request failed with HTTP ${response.status}`
     );
+
     error.status = response.status;
     error.tmdbCode = data.status_code || null;
+
     throw error;
   }
 
@@ -123,7 +141,9 @@ function daysAgo(days) {
 }
 
 function imageUrl(path, size = "w500") {
-  return path ? `${TMDB_IMAGE_BASE}/${size}${path}` : null;
+  return path
+    ? `${TMDB_IMAGE_BASE}/${size}${path}`
+    : null;
 }
 
 function getCatalogDefinitions() {
@@ -132,6 +152,7 @@ function getCatalogDefinitions() {
   for (const provider of PROVIDERS) {
     for (const type of ["movie", "series"]) {
       const typeLabel = type === "movie" ? "Movies" : "Series";
+
       definitions.push({
         type,
         id: `${provider.id}_${type}_popular`,
@@ -139,6 +160,7 @@ function getCatalogDefinitions() {
         providerId: provider.id,
         row: "popular"
       });
+
       definitions.push({
         type,
         id: `${provider.id}_${type}_recent`,
@@ -146,6 +168,7 @@ function getCatalogDefinitions() {
         providerId: provider.id,
         row: "recent"
       });
+
       definitions.push({
         type,
         id: `${provider.id}_${type}_highest`,
@@ -162,6 +185,7 @@ function getCatalogDefinitions() {
     name: "India • Upcoming Movies (OTT not confirmed)",
     row: "upcoming"
   });
+
   definitions.push({
     type: "series",
     id: "india_upcoming_series",
@@ -194,13 +218,21 @@ const manifest = {
 async function getProviderMatches(mediaType) {
   const key = `providers:${mediaType}`;
   const cachedValue = cacheGet(key);
+
   if (cachedValue) return cachedValue;
 
-  const data = await tmdb(`/watch/providers/${mediaType}`, { watch_region: "IN" });
-  const results = Array.isArray(data.results) ? data.results : [];
+  const data = await tmdb(
+    `/watch/providers/${mediaType}`,
+    { watch_region: "IN" }
+  );
+
+  const results = Array.isArray(data.results)
+    ? data.results
+    : [];
 
   const matches = PROVIDERS.map((provider) => {
     const aliases = provider.aliases.map(normalizeName);
+
     const found = results.find((item) =>
       aliases.includes(normalizeName(item.provider_name))
     );
@@ -214,12 +246,22 @@ async function getProviderMatches(mediaType) {
     };
   });
 
-  return cacheSet(key, matches, CACHE_TTL.providers);
+  return cacheSet(
+    key,
+    matches,
+    CACHE_TTL.providers
+  );
 }
 
 function toMetaPreview(item, type) {
-  const name = type === "movie" ? item.title : item.name;
-  const date = type === "movie" ? item.release_date : item.first_air_date;
+  const name = type === "movie"
+    ? item.title
+    : item.name;
+
+  const date = type === "movie"
+    ? item.release_date
+    : item.first_air_date;
+
   return {
     id: `tmdb:${item.id}`,
     type,
@@ -233,14 +275,13 @@ function toMetaPreview(item, type) {
 
 function buildDiscoverParams(definition, page) {
   const today = isoDate(new Date());
-  const params = {
-  page,
-  watch_region: "IN"
-};
 
-if (definition.type === "movie") {
-  params.include_adult = "false";
-}
+  const params = {
+    page,
+    include_adult: "false",
+    watch_region: "IN"
+  };
+
   if (definition.row === "popular") {
     params.sort_by = "popularity.desc";
   } else if (definition.row === "highest") {
@@ -252,6 +293,7 @@ if (definition.type === "movie") {
       definition.type === "movie"
         ? "primary_release_date.desc"
         : "first_air_date.desc";
+
     if (definition.type === "movie") {
       params["primary_release_date.gte"] = daysAgo(180);
       params["primary_release_date.lte"] = today;
@@ -262,10 +304,12 @@ if (definition.type === "movie") {
   } else if (definition.row === "upcoming") {
     params.watch_region = undefined;
     params.region = "IN";
+
     params.sort_by =
       definition.type === "movie"
         ? "primary_release_date.asc"
         : "first_air_date.asc";
+
     if (definition.type === "movie") {
       params["primary_release_date.gte"] = today;
       params["primary_release_date.lte"] = daysFromNow(365);
@@ -280,41 +324,74 @@ if (definition.type === "movie") {
 
 async function getCatalog(type, catalogId, extraString) {
   const definition = CATALOG_DEFINITIONS.find(
-    (item) => item.type === type && item.id === catalogId
+    (item) =>
+      item.type === type &&
+      item.id === catalogId
   );
+
   if (!definition) return { metas: [] };
 
   const extra = new URLSearchParams(extraString || "");
-  const skip = Math.max(0, Number(extra.get("skip") || 0));
+  const skip = Math.max(
+    0,
+    Number(extra.get("skip") || 0)
+  );
+
   const page = Math.floor(skip / 20) + 1;
   const cacheKey = `catalog:${catalogId}:${page}`;
+
   const cachedValue = cacheGet(cacheKey);
+
   if (cachedValue) return cachedValue;
 
   const params = buildDiscoverParams(definition, page);
 
   if (definition.providerId) {
-    const providerMediaType = type === "series" ? "tv" : "movie";
-const matches = await getProviderMatches(providerMediaType);
-    const provider = matches.find((item) => item.id === definition.providerId);
+    const matches = await getProviderMatches(type);
+
+    const provider = matches.find(
+      (item) => item.id === definition.providerId
+    );
+
     if (!provider || !provider.providerId) {
       return { metas: [] };
     }
+
     params.with_watch_providers = provider.providerId;
   }
 
-  const endpoint = type === "movie" ? "/discover/movie" : "/discover/tv";
+  const endpoint = type === "movie"
+    ? "/discover/movie"
+    : "/discover/tv";
+
   const data = await tmdb(endpoint, params);
+
   const metas = (data.results || [])
     .filter((item) => item.poster_path)
     .map((item) => toMetaPreview(item, type));
 
-  return cacheSet(cacheKey, { metas }, CACHE_TTL.catalog);
+  return cacheSet(
+    cacheKey,
+    { metas },
+    CACHE_TTL.catalog
+  );
 }
 
 function getIndiaProviderGroups(providerData) {
-  const india = providerData && providerData.results ? providerData.results.IN : null;
-  if (!india) return { lines: ["No India provider listing was returned by TMDB."], link: null };
+  const india =
+    providerData &&
+    providerData.results
+      ? providerData.results.IN
+      : null;
+
+  if (!india) {
+    return {
+      lines: [
+        "No India provider listing was returned by TMDB."
+      ],
+      link: null
+    };
+  }
 
   const categories = [
     ["flatrate", "Subscription"],
@@ -325,70 +402,196 @@ function getIndiaProviderGroups(providerData) {
   ];
 
   const lines = [];
+
   for (const [key, label] of categories) {
-    const providers = Array.isArray(india[key]) ? india[key] : [];
+    const providers = Array.isArray(india[key])
+      ? india[key]
+      : [];
+
     for (const provider of providers) {
-      lines.push(`${provider.provider_name} — ${label}`);
+      lines.push(
+        `${provider.provider_name} — ${label}`
+      );
     }
   }
 
   return {
-    lines: lines.length ? lines : ["No India watch options listed by TMDB."],
+    lines: lines.length
+      ? lines
+      : ["No India watch options listed by TMDB."],
     link: india.link || null
   };
 }
 
 async function getOmdbRatings(imdbId) {
   const apiKey = process.env.OMDB_API_KEY;
+
   if (!apiKey || !imdbId) return null;
 
   const key = `omdb:${imdbId}`;
   const cachedValue = cacheGet(key);
+
   if (cachedValue) return cachedValue;
 
   const url = new URL("https://www.omdbapi.com/");
+
   url.searchParams.set("i", imdbId);
   url.searchParams.set("apikey", apiKey);
 
   const response = await fetch(url);
   const data = await response.json();
 
-  if (!response.ok || data.Response !== "True") return null;
+  if (!response.ok || data.Response !== "True") {
+    return null;
+  }
 
-  const ratings = Array.isArray(data.Ratings) ? data.Ratings : [];
-  const rt = ratings.find((rating) => rating.Source === "Rotten Tomatoes");
+  const ratings = Array.isArray(data.Ratings)
+    ? data.Ratings
+    : [];
+
+  const rt = ratings.find(
+    (rating) => rating.Source === "Rotten Tomatoes"
+  );
 
   const result = {
     imdbRating:
-      data.imdbRating && data.imdbRating !== "N/A" ? data.imdbRating : null,
+      data.imdbRating && data.imdbRating !== "N/A"
+        ? data.imdbRating
+        : null,
+
     rottenTomatoes:
-      rt && rt.Value && rt.Value !== "N/A" ? rt.Value : null,
-    awards: data.Awards && data.Awards !== "N/A" ? data.Awards : null
+      rt && rt.Value && rt.Value !== "N/A"
+        ? rt.Value
+        : null,
+
+    awards:
+      data.Awards && data.Awards !== "N/A"
+        ? data.Awards
+        : null
   };
 
-  return cacheSet(key, result, CACHE_TTL.omdb);
+  return cacheSet(
+    key,
+    result,
+    CACHE_TTL.omdb
+  );
 }
 
 function getCertification(type, detail, extra) {
   if (type === "movie") {
-    const results = extra && extra.results ? extra.results : [];
-    const india = results.find((item) => item.iso_3166_1 === "IN");
-    if (!india || !Array.isArray(india.release_dates)) return null;
-    const release = india.release_dates.find((item) => item.certification);
+    const results =
+      extra && extra.results
+        ? extra.results
+        : [];
+
+    const india = results.find(
+      (item) => item.iso_3166_1 === "IN"
+    );
+
+    if (!india || !Array.isArray(india.release_dates)) {
+      return null;
+    }
+
+    const release = india.release_dates.find(
+      (item) => item.certification
+    );
+
     return release ? release.certification : null;
   }
 
-  const results = extra && extra.results ? extra.results : [];
-  const india = results.find((item) => item.iso_3166_1 === "IN");
-  return india && india.rating ? india.rating : null;
+  const results =
+    extra && extra.results
+      ? extra.results
+      : [];
+
+  const india = results.find(
+    (item) => item.iso_3166_1 === "IN"
+  );
+
+  return india && india.rating
+    ? india.rating
+    : null;
+}
+
+/*
+ * Fetch all seasons and their episodes for a TV series.
+ * Stremio-compatible video IDs include series, season and episode.
+ */
+async function getSeriesEpisodes(detailPath, seriesId, seasons) {
+  if (!Array.isArray(seasons) || seasons.length === 0) {
+    return [];
+  }
+
+  const seasonResults = await Promise.allSettled(
+    seasons
+      .filter(
+        (season) =>
+          Number.isInteger(season.season_number) &&
+          season.season_number >= 0
+      )
+      .map((season) =>
+        tmdb(
+          `${detailPath}/season/${season.season_number}`
+        )
+      )
+  );
+
+  const videos = [];
+
+  for (const result of seasonResults) {
+    if (result.status !== "fulfilled") continue;
+
+    const episodes = Array.isArray(result.value.episodes)
+      ? result.value.episodes
+      : [];
+
+    for (const episode of episodes) {
+      if (
+        !Number.isInteger(episode.season_number) ||
+        !Number.isInteger(episode.episode_number)
+      ) {
+        continue;
+      }
+
+      videos.push({
+        id: `tmdb:${seriesId}:${episode.season_number}:${episode.episode_number}`,
+        title:
+          episode.name ||
+          `Episode ${episode.episode_number}`,
+        released: episode.air_date
+          ? `${episode.air_date}T00:00:00.000Z`
+          : undefined,
+        season: episode.season_number,
+        episode: episode.episode_number,
+        thumbnail: imageUrl(
+          episode.still_path,
+          "w500"
+        ) || undefined,
+        overview: episode.overview || undefined,
+        runtime: episode.runtime || undefined
+      });
+    }
+  }
+
+  videos.sort((a, b) => {
+    if (a.season !== b.season) {
+      return a.season - b.season;
+    }
+
+    return a.episode - b.episode;
+  });
+
+  return videos;
 }
 
 async function getMeta(type, rawId) {
   const id = String(rawId || "").replace(/^tmdb:/, "");
+
   if (!/^\d+$/.test(id)) return null;
 
   const cacheKey = `meta:${type}:${id}`;
   const cachedValue = cacheGet(cacheKey);
+
   if (cachedValue) return cachedValue;
 
   const isMovie = type === "movie";
@@ -397,7 +600,9 @@ async function getMeta(type, rawId) {
 
   const requests = [
     tmdb(detailPath),
-    tmdb(`${detailPath}/${isMovie ? "credits" : "aggregate_credits"}`),
+    tmdb(
+      `${detailPath}/${isMovie ? "credits" : "aggregate_credits"}`
+    ),
     tmdb(`${detailPath}/external_ids`),
     tmdb(`${detailPath}/videos`),
     tmdb(`${detailPath}/watch/providers`),
@@ -406,10 +611,20 @@ async function getMeta(type, rawId) {
     )
   ];
 
-  const [detail, credits, externalIds, videos, watchProviders, certifications] =
-    await Promise.all(requests);
+  const [
+    detail,
+    credits,
+    externalIds,
+    videos,
+    watchProviders,
+    certifications
+  ] = await Promise.all(requests);
 
-  const imdbId = externalIds && externalIds.imdb_id ? externalIds.imdb_id : null;
+  const imdbId =
+    externalIds && externalIds.imdb_id
+      ? externalIds.imdb_id
+      : null;
+
   const omdb = await getOmdbRatings(imdbId);
 
   const cast = (credits.cast || [])
@@ -418,52 +633,135 @@ async function getMeta(type, rawId) {
     .filter(Boolean);
 
   let director = [];
+
   if (isMovie) {
     director = (credits.crew || [])
       .filter((person) => person.job === "Director")
       .map((person) => person.name);
   } else {
-    director = (detail.created_by || []).map((person) => person.name);
+    director = (detail.created_by || [])
+      .map((person) => person.name);
   }
 
-  const title = isMovie ? detail.title : detail.name;
-  const date = isMovie ? detail.release_date : detail.first_air_date;
-  const year = date ? date.slice(0, 4) : "";
+  const title = isMovie
+    ? detail.title
+    : detail.name;
+
+  const date = isMovie
+    ? detail.release_date
+    : detail.first_air_date;
+
+  const year = date
+    ? date.slice(0, 4)
+    : "";
+
   const spokenLanguages = (detail.spoken_languages || [])
-    .map((language) => language.english_name || language.name)
+    .map(
+      (language) =>
+        language.english_name || language.name
+    )
     .filter(Boolean);
-  const genres = (detail.genres || []).map((genre) => genre.name);
-  const providerInfo = getIndiaProviderGroups(watchProviders);
-  const certification = getCertification(type, detail, certifications);
+
+  const genres = (detail.genres || [])
+    .map((genre) => genre.name);
+
+  const providerInfo =
+    getIndiaProviderGroups(watchProviders);
+
+  const certification =
+    getCertification(type, detail, certifications);
 
   const descriptionParts = [];
-  if (detail.overview) descriptionParts.push(detail.overview);
-  descriptionParts.push("");
-  descriptionParts.push(`TMDB rating: ${detail.vote_average ?? "Unavailable"}/10 (${detail.vote_count || 0} votes).`);
-  if (omdb && omdb.imdbRating) descriptionParts.push(`IMDb rating: ${omdb.imdbRating}/10.`);
-  if (omdb && omdb.rottenTomatoes) descriptionParts.push(`Rotten Tomatoes: ${omdb.rottenTomatoes}.`);
-  if (year) descriptionParts.push(`Release year: ${year}.`);
-  if (certification) descriptionParts.push(`India certification listed by TMDB: ${certification}.`);
-  if (genres.length) descriptionParts.push(`Genres: ${genres.join(", ")}.`);
-  if (spokenLanguages.length) {
-    descriptionParts.push(`TMDB-reported spoken languages: ${spokenLanguages.join(", ")}.`);
+
+  if (detail.overview) {
+    descriptionParts.push(detail.overview);
   }
-  if (director.length) descriptionParts.push(`${isMovie ? "Director" : "Created by"}: ${director.join(", ")}.`);
-  if (cast.length) descriptionParts.push(`Cast: ${cast.join(", ")}.`);
-  if (isMovie && detail.runtime) descriptionParts.push(`Runtime: ${detail.runtime} minutes.`);
+
+  descriptionParts.push("");
+
+  descriptionParts.push(
+    `TMDB rating: ${detail.vote_average ?? "Unavailable"}/10 (${detail.vote_count || 0} votes).`
+  );
+
+  if (omdb && omdb.imdbRating) {
+    descriptionParts.push(
+      `IMDb rating: ${omdb.imdbRating}/10.`
+    );
+  }
+
+  if (omdb && omdb.rottenTomatoes) {
+    descriptionParts.push(
+      `Rotten Tomatoes: ${omdb.rottenTomatoes}.`
+    );
+  }
+
+  if (year) {
+    descriptionParts.push(`Release year: ${year}.`);
+  }
+
+  if (certification) {
+    descriptionParts.push(
+      `India certification listed by TMDB: ${certification}.`
+    );
+  }
+
+  if (genres.length) {
+    descriptionParts.push(
+      `Genres: ${genres.join(", ")}.`
+    );
+  }
+
+  if (spokenLanguages.length) {
+    descriptionParts.push(
+      `TMDB-reported spoken languages: ${spokenLanguages.join(", ")}.`
+    );
+  }
+
+  if (director.length) {
+    descriptionParts.push(
+      `${isMovie ? "Director" : "Created by"}: ${director.join(", ")}.`
+    );
+  }
+
+  if (cast.length) {
+    descriptionParts.push(
+      `Cast: ${cast.join(", ")}.`
+    );
+  }
+
+  if (isMovie && detail.runtime) {
+    descriptionParts.push(
+      `Runtime: ${detail.runtime} minutes.`
+    );
+  }
+
   if (!isMovie) {
     descriptionParts.push(
       `Seasons: ${detail.number_of_seasons || "Unavailable"}; episodes: ${detail.number_of_episodes || "Unavailable"}.`
     );
   }
-  descriptionParts.push("");
-  descriptionParts.push("India watch availability (TMDB / JustWatch data):");
-  for (const line of providerInfo.lines) descriptionParts.push(`• ${line}`);
-  descriptionParts.push("Audio-dub and subtitle availability is not verified by this data source.");
 
-  if (omdb && omdb.awards) descriptionParts.push(`Awards: ${omdb.awards}.`);
+  descriptionParts.push("");
+  descriptionParts.push(
+    "India watch availability (TMDB / JustWatch data):"
+  );
+
+  for (const line of providerInfo.lines) {
+    descriptionParts.push(`• ${line}`);
+  }
+
+  descriptionParts.push(
+    "Audio-dub and subtitle availability is not verified by this data source."
+  );
+
+  if (omdb && omdb.awards) {
+    descriptionParts.push(
+      `Awards: ${omdb.awards}.`
+    );
+  }
 
   const links = [];
+
   if (providerInfo.link) {
     links.push({
       name: "Where to watch in India (JustWatch)",
@@ -478,6 +776,7 @@ async function getMeta(type, rawId) {
       video.type === "Trailer" &&
       video.official === true
   );
+
   if (trailer && trailer.key) {
     links.push({
       name: "Official trailer",
@@ -500,18 +799,46 @@ async function getMeta(type, rawId) {
     links
   };
 
-  if (isMovie && detail.runtime) meta.runtime = `${detail.runtime} min`;
-  if (omdb && omdb.imdbRating) meta.imdbRating = omdb.imdbRating;
+  if (isMovie && detail.runtime) {
+    meta.runtime = `${detail.runtime} min`;
+  }
 
-  return cacheSet(cacheKey, { meta }, CACHE_TTL.meta);
+  if (omdb && omdb.imdbRating) {
+    meta.imdbRating = omdb.imdbRating;
+  }
+
+  // Add complete season and episode information to series metadata.
+  if (!isMovie) {
+    meta.videos = await getSeriesEpisodes(
+      detailPath,
+      id,
+      detail.seasons || []
+    );
+  }
+
+  return cacheSet(
+    cacheKey,
+    { meta },
+    CACHE_TTL.meta
+  );
 }
 
 // CORS is required so Stremio and compatible clients can call the add-on.
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,HEAD,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
-  if (req.method === "OPTIONS") return res.sendStatus(204);
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,HEAD,OPTIONS"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type,Authorization"
+  );
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(204);
+  }
+
   next();
 });
 
@@ -523,25 +850,32 @@ app.get("/", (_req, res) => {
 
 app.get("/health", (_req, res) => {
   const auth = getAuthConfig();
+
   res.json({
     status: "ok",
     addon: "OTT Universe India",
     version: VERSION,
     tmdbCredentialConfigured: auth.mode !== "missing",
     tmdbAuthMode: auth.mode,
-    optionalOmdbConfigured: Boolean(process.env.OMDB_API_KEY)
+    optionalOmdbConfigured: Boolean(
+      process.env.OMDB_API_KEY
+    )
   });
 });
 
 app.get("/diagnostics/tmdb", async (_req, res) => {
   const auth = getAuthConfig();
+
   try {
     await tmdb("/configuration");
+
     const providers = await getProviderMatches("movie");
+
     res.json({
       ok: true,
       tmdbAuthentication: "successful",
       authMode: auth.mode,
+
       matchedIndiaProviders: providers
         .filter((provider) => provider.providerId)
         .map((provider) => ({
@@ -549,6 +883,7 @@ app.get("/diagnostics/tmdb", async (_req, res) => {
           name: provider.name,
           matchedName: provider.matchedName
         })),
+
       unmatchedIndiaProviders: providers
         .filter((provider) => !provider.providerId)
         .map((provider) => provider.name)
@@ -559,6 +894,7 @@ app.get("/diagnostics/tmdb", async (_req, res) => {
       authMode: auth.mode,
       httpStatus: error.status || null,
       tmdbError: error.message || "Unknown TMDB error",
+
       note:
         error.status === 401
           ? "TMDB rejected the credential. Check the Render environment-variable name and whether its value is a v4 Read Access Token or a v3 API Key. Do not paste the secret into chat."
@@ -569,24 +905,44 @@ app.get("/diagnostics/tmdb", async (_req, res) => {
 
 app.get("/providers.json", async (_req, res) => {
   try {
-    const [movieProviders, seriesProviders] = await Promise.all([
-      getProviderMatches("movie"),
-      getProviderMatches("tv")
-    ]);
+    const [movieProviders, seriesProviders] =
+      await Promise.all([
+        getProviderMatches("movie"),
+        getProviderMatches("tv")
+      ]);
+
     res.json({
       region: "IN",
       source: "TMDB Watch Providers (powered by JustWatch)",
+
       providers: PROVIDERS.map((provider) => {
-        const movie = movieProviders.find((item) => item.id === provider.id);
-        const series = seriesProviders.find((item) => item.id === provider.id);
+        const movie = movieProviders.find(
+          (item) => item.id === provider.id
+        );
+
+        const series = seriesProviders.find(
+          (item) => item.id === provider.id
+        );
+
         return {
           id: provider.id,
           name: provider.name,
-          movieProviderId: movie ? movie.providerId : null,
-          seriesProviderId: series ? series.providerId : null,
-          logo: (movie && movie.logo) || (series && series.logo) || null,
-          availableForMovies: Boolean(movie && movie.providerId),
-          availableForSeries: Boolean(series && series.providerId)
+          movieProviderId: movie
+            ? movie.providerId
+            : null,
+          seriesProviderId: series
+            ? series.providerId
+            : null,
+          logo:
+            (movie && movie.logo) ||
+            (series && series.logo) ||
+            null,
+          availableForMovies: Boolean(
+            movie && movie.providerId
+          ),
+          availableForSeries: Boolean(
+            series && series.providerId
+          )
         };
       })
     });
@@ -598,7 +954,11 @@ app.get("/providers.json", async (_req, res) => {
 });
 
 app.get("/manifest.json", (_req, res) => {
-  res.setHeader("Cache-Control", "public, max-age=300");
+  res.setHeader(
+    "Cache-Control",
+    "public, max-age=300"
+  );
+
   res.json(manifest);
 });
 
@@ -607,8 +967,18 @@ app.get("/catalog/:type/:catalogId.json", async (req, res) => {
     if (!["movie", "series"].includes(req.params.type)) {
       return res.json({ metas: [] });
     }
-    const result = await getCatalog(req.params.type, req.params.catalogId, "");
-    res.setHeader("Cache-Control", "public, max-age=300");
+
+    const result = await getCatalog(
+      req.params.type,
+      req.params.catalogId,
+      ""
+    );
+
+    res.setHeader(
+      "Cache-Control",
+      "public, max-age=300"
+    );
+
     res.json(result);
   } catch (error) {
     res.status(error.status || 500).json({
@@ -618,33 +988,51 @@ app.get("/catalog/:type/:catalogId.json", async (req, res) => {
   }
 });
 
-app.get("/catalog/:type/:catalogId/:extra.json", async (req, res) => {
-  try {
-    if (!["movie", "series"].includes(req.params.type)) {
-      return res.json({ metas: [] });
+app.get(
+  "/catalog/:type/:catalogId/:extra.json",
+  async (req, res) => {
+    try {
+      if (!["movie", "series"].includes(req.params.type)) {
+        return res.json({ metas: [] });
+      }
+
+      const result = await getCatalog(
+        req.params.type,
+        req.params.catalogId,
+        req.params.extra
+      );
+
+      res.setHeader(
+        "Cache-Control",
+        "public, max-age=300"
+      );
+
+      res.json(result);
+    } catch (error) {
+      res.status(error.status || 500).json({
+        metas: [],
+        error: error.message || "Catalogue request failed"
+      });
     }
-    const result = await getCatalog(
-      req.params.type,
-      req.params.catalogId,
-      req.params.extra
-    );
-    res.setHeader("Cache-Control", "public, max-age=300");
-    res.json(result);
-  } catch (error) {
-    res.status(error.status || 500).json({
-      metas: [],
-      error: error.message || "Catalogue request failed"
-    });
   }
-});
+);
 
 app.get("/meta/:type/:id.json", async (req, res) => {
   try {
     if (!["movie", "series"].includes(req.params.type)) {
       return res.json({ meta: null });
     }
-    const result = await getMeta(req.params.type, req.params.id);
-    res.setHeader("Cache-Control", "public, max-age=300");
+
+    const result = await getMeta(
+      req.params.type,
+      req.params.id
+    );
+
+    res.setHeader(
+      "Cache-Control",
+      "public, max-age=300"
+    );
+
     res.json(result || { meta: null });
   } catch (error) {
     res.status(error.status || 500).json({
@@ -655,5 +1043,7 @@ app.get("/meta/:type/:id.json", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`OTT Universe India ${VERSION} listening on port ${PORT}`);
+  console.log(
+    `OTT Universe India ${VERSION} listening on port ${PORT}`
+  );
 });
