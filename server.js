@@ -2,7 +2,7 @@ const express = require("express");
 
 const app = express();
 const PORT = Number(process.env.PORT || 10000);
-const VERSION = "2.1.0";
+const VERSION = "2.1.1";
 const TMDB_BASE = "https://api.themoviedb.org/3";
 const TMDB_IMAGE_BASE = "https://image.tmdb.org/t/p";
 
